@@ -1,0 +1,672 @@
+"use client";
+
+import { useState, useEffect, useRef, use, useCallback } from "react";
+import Link from "next/link";
+import {
+  ArrowLeft, Mail, Shield, Share2, Palette, LogOut, Camera, X,
+  ImageIcon, Paintbrush, Trash2, AlertTriangle, Plus, BookOpen,
+  ChevronDown, Check, Search, Loader2,
+} from "lucide-react";
+import { auth, subjects as subjectsApi, admin as adminApi, type UserProfile, type UserSubject, type Subject } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
+import { useRouter } from "next/navigation";
+
+const THEMES = [
+  { id: "default", label: "Default" },
+  { id: "slate", label: "Slate" },
+  { id: "sepia", label: "Sepia" },
+  { id: "dark", label: "Dark" },
+] as const;
+
+type ThemeId = (typeof THEMES)[number]["id"];
+
+const BANNER_W = 1400;
+const BANNER_H = 440;
+const AVATAR_SIZE = 400;
+
+const BANNER_COLORS = [
+  "linear-gradient(135deg, #0f0f0f 0%, #1a1a2e 50%, #16213e 100%)",
+  "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+  "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",
+  "linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)",
+  "linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)",
+  "linear-gradient(135deg, #fa709a 0%, #fee140 100%)",
+  "linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)",
+  "linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%)",
+];
+
+const ROLE_OPTIONS = [
+  { value: "guest", label: "Guest" },
+  { value: "student", label: "Student" },
+  { value: "faculty", label: "Faculty" },
+];
+
+function cropAndCompress(file: File, targetW: number, targetH: number, quality: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const aspect = targetW / targetH;
+      let sw = img.width;
+      let sh = img.width / aspect;
+      if (sh > img.height) { sh = img.height; sw = img.height * aspect; }
+      const sx = (img.width - sw) / 2;
+      const sy = (img.height - sh) / 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { reject(new Error("Canvas unavailable")); return; }
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetW, targetH);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("Could not load image")); };
+    img.src = objectUrl;
+  });
+}
+
+function gradientToBase64(gradient: string, w: number, h: number): string {
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  const colors = gradient.match(/#[0-9a-fA-F]{6}/g) || ["#000", "#333"];
+  const grd = ctx.createLinearGradient(0, 0, w, h);
+  colors.forEach((c, i) => grd.addColorStop(i / Math.max(colors.length - 1, 1), c));
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, w, h);
+  return canvas.toDataURL("image/jpeg", 0.85);
+}
+
+type OverlayTarget = "banner" | "avatar" | null;
+
+// ── Subject Management Modal ──────────────────────────────────────────────────
+
+function SubjectManageModal({
+  profileUser,
+  currentUser,
+  userSubjects,
+  onClose,
+  onChanged,
+}: {
+  profileUser: UserProfile;
+  currentUser: UserProfile;
+  userSubjects: UserSubject[];
+  onClose: () => void;
+  onChanged: (updated: UserSubject[]) => void;
+}) {
+  const [allSubjects, setAllSubjects] = useState<Subject[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState("");
+
+  const enrolledIds = new Set(userSubjects.map((s) => s.id));
+
+  useEffect(() => {
+    const fetchSubjects = currentUser.role === "admin"
+      ? subjectsApi.listAll()
+      : subjectsApi.my();
+    fetchSubjects
+      .then(setAllSubjects)
+      .catch(() => setAllSubjects([]))
+      .finally(() => setLoading(false));
+  }, [currentUser.role]);
+
+  const filtered = allSubjects.filter(
+    (s) =>
+      s.name.toLowerCase().includes(search.toLowerCase()) ||
+      s.code.toLowerCase().includes(search.toLowerCase())
+  );
+
+  async function toggle(subject: Subject) {
+    setBusy(subject.id);
+    setError("");
+    try {
+      if (enrolledIds.has(subject.id)) {
+        await subjectsApi.removeMember(subject.id, profileUser.id);
+        onChanged(userSubjects.filter((s) => s.id !== subject.id));
+      } else {
+        if (profileUser.role === "faculty" || profileUser.role === "admin") {
+          await subjectsApi.assignFaculty(subject.id, profileUser.id);
+          onChanged([...userSubjects, { id: subject.id, name: subject.name, code: subject.code, description: subject.description ?? null, enrollment_role: "faculty" }]);
+        } else {
+          await subjectsApi.assignStudent(subject.id, profileUser.id);
+          onChanged([...userSubjects, { id: subject.id, name: subject.name, code: subject.code, description: subject.description ?? null, enrollment_role: "student" }]);
+        }
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to update enrollment");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[85dvh]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-100">
+          <div>
+            <h3 className="text-[15px] font-semibold text-gray-900">Manage Subjects</h3>
+            <p className="text-[12px] text-gray-400 mt-0.5">{profileUser.full_name} · {profileUser.role}</p>
+          </div>
+          <button onClick={onClose} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-gray-100 transition-colors">
+            <X size={15} className="text-gray-500" />
+          </button>
+        </div>
+        <div className="px-4 py-2.5 border-b border-gray-100">
+          <div className="flex items-center gap-2 rounded-xl bg-gray-50 border border-gray-200 px-3 py-2">
+            <Search size={13} className="text-gray-400 flex-shrink-0" />
+            <input
+              autoFocus
+              type="text"
+              placeholder="Search subjects..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-gray-400"
+            />
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto px-2 py-2">
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 size={18} className="animate-spin text-gray-400" />
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="text-center py-8 text-[13px] text-gray-400">
+              {search ? "No subjects match your search" : "No subjects available"}
+            </div>
+          ) : (
+            filtered.map((subject) => {
+              const enrolled = enrolledIds.has(subject.id);
+              const isBusy = busy === subject.id;
+              return (
+                <button
+                  key={subject.id}
+                  onClick={() => toggle(subject)}
+                  disabled={isBusy}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors text-left mb-0.5 ${enrolled ? "bg-black text-white hover:bg-gray-800" : "hover:bg-gray-50 text-gray-700"} disabled:opacity-50`}
+                >
+                  <div className={`h-5 w-5 rounded-full border flex items-center justify-center flex-shrink-0 transition-colors ${enrolled ? "border-white bg-white" : "border-gray-300"}`}>
+                    {enrolled && <Check size={10} className="text-black" strokeWidth={3} />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[13px] font-medium truncate ${enrolled ? "text-white" : "text-gray-900"}`}>{subject.name}</span>
+                      <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded flex-shrink-0 ${enrolled ? "bg-white/20 text-white" : "bg-gray-100 text-gray-500"}`}>{subject.code}</span>
+                    </div>
+                    {subject.description && (
+                      <p className={`text-[11px] truncate mt-0.5 ${enrolled ? "text-white/60" : "text-gray-400"}`}>{subject.description}</p>
+                    )}
+                  </div>
+                  {isBusy && <Loader2 size={13} className="animate-spin flex-shrink-0 opacity-60" />}
+                </button>
+              );
+            })
+          )}
+        </div>
+        {error && (
+          <div className="px-5 pb-3">
+            <p className="text-[12px] text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</p>
+          </div>
+        )}
+        <div className="px-5 pb-5 pt-2 border-t border-gray-100">
+          <button onClick={onClose} className="w-full rounded-xl bg-gray-100 text-gray-700 py-2.5 text-[13px] font-medium hover:bg-gray-200 transition-colors">Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Role Selector (admin only) ────────────────────────────────────────────────
+
+function RoleSelector({ userId, currentRole, onChanged }: { userId: number; currentRole: string; onChanged: (r: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  async function changeRole(role: string) {
+    if (role === currentRole) { setOpen(false); return; }
+    setBusy(true);
+    setOpen(false);
+    try {
+      await adminApi.updateRole(userId, role);
+      onChanged(role);
+    } catch { /* ignore */ } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div ref={ref} className="relative inline-block">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={busy}
+        className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-0.5 text-[11px] font-medium text-gray-600 capitalize hover:bg-gray-200 transition-colors disabled:opacity-50"
+      >
+        {busy ? <Loader2 size={10} className="animate-spin" /> : <Shield size={10} className="text-gray-400" />}
+        {currentRole}
+        <ChevronDown size={9} className="text-gray-400" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-50 bg-white rounded-xl border border-gray-200 shadow-lg py-1 min-w-[110px]">
+          {ROLE_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => changeRole(opt.value)}
+              className={`w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 hover:bg-gray-50 transition-colors ${currentRole === opt.value ? "font-semibold text-black" : "text-gray-700"}`}
+            >
+              {currentRole === opt.value && <Check size={10} strokeWidth={3} />}
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main Profile Page ─────────────────────────────────────────────────────────
+
+export default function ProfilePage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const { user: currentUser, logout } = useAuth();
+  const router = useRouter();
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const [theme, setTheme] = useState<ThemeId>("default");
+  const [overlayTarget, setOverlayTarget] = useState<OverlayTarget>(null);
+  const [saving, setSaving] = useState(false);
+  const [editingBio, setEditingBio] = useState(false);
+  const [bioValue, setBioValue] = useState("");
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState("");
+
+  // Subjects
+  const [userSubjects, setUserSubjects] = useState<UserSubject[]>([]);
+  const [subjectsLoading, setSubjectsLoading] = useState(false);
+  const [showSubjectModal, setShowSubjectModal] = useState(false);
+
+  // Role (live-update without refetching profile)
+  const [displayRole, setDisplayRole] = useState<string>("");
+
+  // Delete account
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const bannerInputRef = useRef<HTMLInputElement>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    auth
+      .profile(parseInt(id, 10))
+      .then((p) => { setProfile(p); setBioValue(p.bio || ""); setNameValue(p.full_name); setDisplayRole(p.role); })
+      .catch(() => setProfile(null))
+      .finally(() => setLoading(false));
+  }, [id]);
+
+  useEffect(() => {
+    if (!profile) return;
+    const canView = currentUser?.id === profile.id || currentUser?.role === "faculty" || currentUser?.role === "admin";
+    if (!canView) return;
+    setSubjectsLoading(true);
+    subjectsApi.userSubjects(profile.id)
+      .then(setUserSubjects)
+      .catch(() => setUserSubjects([]))
+      .finally(() => setSubjectsLoading(false));
+  }, [profile, currentUser]);
+
+  useEffect(() => {
+    const saved = (localStorage.getItem("kec-theme") as ThemeId | null) || "default";
+    setTheme(saved);
+  }, []);
+
+  function applyTheme(next: ThemeId) {
+    setTheme(next);
+    localStorage.setItem("kec-theme", next);
+    if (next === "default") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", next);
+  }
+
+  function handleShare() {
+    const url = `${window.location.origin}/profile/${id}`;
+    if (navigator.share) {
+      navigator.share({ title: profile?.full_name ?? "Profile", url }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+    }
+  }
+
+  const saveProfile = useCallback(async (updates: Partial<{ full_name: string; bio: string | null; avatar_base64: string | null; banner_base64: string | null }>) => {
+    if (!profile) return;
+    setSaving(true);
+    try {
+      const updated = await auth.updateMe({
+        full_name: updates.full_name ?? profile.full_name,
+        bio: updates.bio !== undefined ? updates.bio : (profile.bio || null),
+        avatar_base64: updates.avatar_base64 !== undefined ? updates.avatar_base64 : (profile.avatar_base64 || null),
+        banner_base64: updates.banner_base64 !== undefined ? updates.banner_base64 : (profile.banner_base64 || null),
+      });
+      setProfile(updated);
+      if (updates.bio !== undefined) setBioValue(updated.bio || "");
+      if (updates.full_name) setNameValue(updated.full_name);
+    } catch { /* */ } finally { setSaving(false); }
+  }, [profile]);
+
+  async function handleImageUpload(file: File, target: "banner" | "avatar") {
+    try {
+      if (target === "banner") {
+        const c = await cropAndCompress(file, BANNER_W, BANNER_H, 0.75);
+        await saveProfile({ banner_base64: c });
+      } else {
+        const c = await cropAndCompress(file, AVATAR_SIZE, AVATAR_SIZE, 0.8);
+        await saveProfile({ avatar_base64: c });
+      }
+    } catch { /* */ }
+    setOverlayTarget(null);
+  }
+
+  async function handleGradientBanner(gradient: string) {
+    const base64 = gradientToBase64(gradient, BANNER_W, BANNER_H);
+    await saveProfile({ banner_base64: base64 });
+    setOverlayTarget(null);
+  }
+
+  if (loading) {
+    return <main className="grid place-items-center py-32"><div className="h-5 w-5 border-2 border-black border-t-transparent rounded-full animate-spin" /></main>;
+  }
+  if (!profile) {
+    return (
+      <main className="text-center py-20">
+        <p className="text-sm text-gray-500">User not found</p>
+        <Link href="/feed" className="mt-3 inline-block text-sm font-medium text-black hover:underline">Back to Feed</Link>
+      </main>
+    );
+  }
+
+  const isOwn = currentUser?.id === profile.id;
+  const isAdmin = currentUser?.role === "admin";
+  const isFaculty = currentUser?.role === "faculty";
+  const canManageSubjects = (isAdmin || isFaculty) && !isOwn;
+  const canChangeRole = isAdmin && !isOwn && profile.role !== "admin";
+  const subjectRoleColor = (r: string) => r === "faculty" ? "bg-violet-100 text-violet-700" : "bg-sky-100 text-sky-700";
+
+  return (
+    <main ref={containerRef} className="space-y-5">
+      <Link href="/feed" className="inline-flex items-center gap-1.5 text-sm font-medium text-gray-500 hover:text-black transition-colors">
+        <ArrowLeft size={14} />
+        Back to Feed
+      </Link>
+
+      <div className="rounded-xl border border-gray-200 overflow-hidden">
+        {/* Banner */}
+        <div className="relative group">
+          <div className="overflow-hidden bg-gray-100" style={{ aspectRatio: "16/5" }}>
+            {profile.banner_base64
+              ? <img src={profile.banner_base64} alt="Banner" className="h-full w-full object-cover" />  // eslint-disable-line @next/next/no-img-element
+              : <div className="h-full w-full bg-gradient-to-r from-gray-900 via-gray-700 to-gray-900" />}
+          </div>
+          {isOwn && (
+            <button onClick={() => setOverlayTarget("banner")} className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/40 transition-colors">
+              <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-xs font-medium text-gray-800 shadow">
+                <Camera size={13} /> Change Banner
+              </span>
+            </button>
+          )}
+        </div>
+
+        <div className="p-6 pt-0">
+          {/* Avatar row */}
+          <div className="flex items-end justify-between -mt-10">
+            <div className="relative group/avatar">
+              <div className="h-20 w-20 overflow-hidden rounded-full border-4 border-white bg-black shadow-md">
+                {profile.avatar_base64
+                  ? <img src={profile.avatar_base64} alt={`${profile.full_name} avatar`} className="h-full w-full object-cover" />  // eslint-disable-line @next/next/no-img-element
+                  : <div className="grid h-full w-full place-items-center text-2xl font-semibold text-white">{profile.full_name[0]}</div>}
+              </div>
+              {isOwn && (
+                <button onClick={() => setOverlayTarget("avatar")} className="absolute inset-0 flex items-center justify-center rounded-full bg-black/0 group-hover/avatar:bg-black/40 transition-colors">
+                  <Camera size={14} className="text-white opacity-0 group-hover/avatar:opacity-100 transition-opacity" />
+                </button>
+              )}
+            </div>
+            <button onClick={handleShare} className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 px-3.5 py-1.5 text-[13px] font-medium text-gray-700 hover:border-gray-400 transition-colors">
+              <Share2 size={13} />
+              {copied ? "Copied!" : "Share"}
+            </button>
+          </div>
+
+          {/* Name */}
+          <div className="mt-4">
+            {isOwn && editingName ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text" value={nameValue} onChange={(e) => setNameValue(e.target.value)}
+                  className="text-xl font-semibold tracking-tight border-b border-gray-300 outline-none focus:border-black bg-transparent py-0.5"
+                  autoFocus maxLength={120}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && nameValue.trim().length >= 2) { saveProfile({ full_name: nameValue.trim() }); setEditingName(false); }
+                    if (e.key === "Escape") { setNameValue(profile.full_name); setEditingName(false); }
+                  }}
+                />
+                <button onClick={() => { if (nameValue.trim().length >= 2) { saveProfile({ full_name: nameValue.trim() }); setEditingName(false); } }} className="text-xs text-gray-500 hover:text-black">Save</button>
+                <button onClick={() => { setNameValue(profile.full_name); setEditingName(false); }} className="text-xs text-gray-400 hover:text-black">Cancel</button>
+              </div>
+            ) : (
+              <h1 className={`text-xl font-semibold tracking-tight ${isOwn ? "cursor-pointer hover:underline decoration-gray-300" : ""}`} onClick={() => isOwn && setEditingName(true)} title={isOwn ? "Click to edit name" : undefined}>
+                {profile.full_name}
+              </h1>
+            )}
+            <div className="flex items-center gap-2 mt-1">
+              <Mail size={13} className="text-gray-400" />
+              <span className="text-sm text-gray-500">{profile.email}</span>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <Shield size={13} className="text-gray-400" />
+              {canChangeRole
+                ? <RoleSelector userId={profile.id} currentRole={displayRole} onChanged={setDisplayRole} />
+                : <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-[11px] font-medium text-gray-600 capitalize">{displayRole}</span>
+              }
+            </div>
+          </div>
+
+          {/* Bio */}
+          <div className="mt-4">
+            {isOwn && editingBio ? (
+              <div className="space-y-2">
+                <textarea value={bioValue} onChange={(e) => setBioValue(e.target.value)}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-black focus:ring-1 focus:ring-black resize-none transition-colors"
+                  rows={3} placeholder="Write something about yourself..." maxLength={500} autoFocus />
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-gray-400">{bioValue.length}/500</span>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => { setBioValue(profile.bio || ""); setEditingBio(false); }} className="text-xs text-gray-400 hover:text-black">Cancel</button>
+                    <button onClick={() => { saveProfile({ bio: bioValue.trim() || null }); setEditingBio(false); }} disabled={saving}
+                      className="rounded-full bg-black px-3 py-1 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50">
+                      {saving ? "Saving..." : "Save"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className={`text-sm ${profile.bio ? "text-gray-600" : "text-gray-400 italic"} ${isOwn ? "cursor-pointer hover:bg-gray-50 rounded-lg px-2 py-1 -mx-2" : ""}`}
+                onClick={() => isOwn && setEditingBio(true)} title={isOwn ? "Click to edit bio" : undefined}>
+                {profile.bio || (isOwn ? "Add a bio..." : "No bio yet")}
+              </p>
+            )}
+          </div>
+
+          {/* ── Subjects Section ── */}
+          {(isOwn || canManageSubjects || (isFaculty && !isOwn)) && (
+            <div className="mt-5 pt-4 border-t border-gray-100">
+              <div className="flex items-center justify-between mb-2.5">
+                <div className="flex items-center gap-1.5">
+                  <BookOpen size={13} className="text-gray-400" />
+                  <span className="text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Subjects</span>
+                </div>
+                {canManageSubjects && (
+                  <button onClick={() => setShowSubjectModal(true)}
+                    className="inline-flex items-center gap-1 rounded-full border border-gray-200 px-2.5 py-1 text-[11px] font-medium text-gray-600 hover:border-gray-400 hover:text-black transition-colors">
+                    <Plus size={10} strokeWidth={2.5} /> Manage
+                  </button>
+                )}
+              </div>
+              {subjectsLoading ? (
+                <div className="flex items-center gap-1.5 py-1">
+                  <Loader2 size={12} className="animate-spin text-gray-400" />
+                  <span className="text-[12px] text-gray-400">Loading subjects…</span>
+                </div>
+              ) : userSubjects.length === 0 ? (
+                <p className="text-[12px] text-gray-400 italic">
+                  {canManageSubjects ? "No subjects assigned yet — click Manage to add." : "Not enrolled in any subjects yet."}
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {userSubjects.map((s) => (
+                    <span key={s.id} className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${subjectRoleColor(s.enrollment_role)}`} title={s.description ?? undefined}>
+                      <span className="font-mono text-[10px] opacity-70">{s.code}</span>
+                      {s.name}
+                      <span className="opacity-60 text-[10px]">· {s.enrollment_role}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Settings (own profile only) */}
+      {isOwn && (
+        <>
+          <div className="rounded-xl border border-gray-200 p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Palette size={16} className="text-gray-500" />
+              <h2 className="text-sm font-semibold">Theme</h2>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-4">
+              {THEMES.map((item) => (
+                <button key={item.id} type="button" onClick={() => applyTheme(item.id)}
+                  className={`rounded-lg border px-3 py-2 text-sm transition-colors ${theme === item.id ? "border-black bg-black text-white" : "border-gray-200 text-gray-700 hover:border-gray-400"}`}>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button onClick={() => { logout(); router.push("/"); }}
+            className="w-full rounded-xl border border-gray-200 p-4 flex items-center gap-3 text-sm font-medium text-red-600 hover:bg-red-50 hover:border-red-200 transition-colors">
+            <LogOut size={16} />
+            Sign Out
+          </button>
+
+          <div className="rounded-xl border border-red-200 p-5">
+            <div className="flex items-center gap-2 mb-1">
+              <AlertTriangle size={16} className="text-red-500" />
+              <h2 className="text-sm font-semibold text-red-600">Danger Zone</h2>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">Once you delete your account, there is no going back. All your data will be permanently removed.</p>
+            {!showDeleteConfirm ? (
+              <button onClick={() => setShowDeleteConfirm(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors">
+                <Trash2 size={14} /> Delete My Account
+              </button>
+            ) : (
+              <div className="space-y-3 rounded-lg border border-red-100 bg-red-50/50 p-4">
+                <p className="text-sm font-medium text-red-700">To confirm, type <span className="font-mono font-bold">delete my account</span> below:</p>
+                <input type="text" value={deleteConfirmText} onChange={(e) => setDeleteConfirmText(e.target.value.toLowerCase())}
+                  className="w-full rounded-lg border border-red-200 bg-white py-2 px-3 text-sm outline-none focus:border-red-400" placeholder="delete my account" autoComplete="off" />
+                <p className="text-sm font-medium text-red-700">Confirm your password:</p>
+                <input type="password" value={deletePassword} onChange={(e) => setDeletePassword(e.target.value)}
+                  className="w-full rounded-lg border border-red-200 bg-white py-2 px-3 text-sm outline-none focus:border-red-400" placeholder="Your password" autoComplete="current-password" />
+                {deleteError && <p className="text-xs text-red-600">{deleteError}</p>}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={async () => {
+                      if (deleteConfirmText !== "delete my account" || !deletePassword) return;
+                      setDeleting(true); setDeleteError("");
+                      try { await auth.deleteMe(deletePassword); logout(); router.push("/auth/sign-in"); }
+                      catch (err: unknown) { setDeleteError(err instanceof Error ? err.message : "Failed to delete account"); }
+                      finally { setDeleting(false); }
+                    }}
+                    disabled={deleteConfirmText !== "delete my account" || !deletePassword || deleting}
+                    className="rounded-lg bg-red-600 text-white px-4 py-2 text-sm font-medium disabled:opacity-40 hover:bg-red-700 transition-colors">
+                    {deleting ? "Deleting..." : "I understand, delete my account"}
+                  </button>
+                  <button onClick={() => { setShowDeleteConfirm(false); setDeleteConfirmText(""); setDeletePassword(""); setDeleteError(""); }}
+                    className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:border-gray-400 transition-colors">Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Banner/Avatar overlay */}
+      {overlayTarget && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-md" onClick={() => setOverlayTarget(null)}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold">{overlayTarget === "banner" ? "Change Banner" : "Change Profile Photo"}</h3>
+              <button onClick={() => setOverlayTarget(null)} className="grid h-8 w-8 place-items-center rounded-full hover:bg-gray-100 transition-colors"><X size={16} className="text-gray-500" /></button>
+            </div>
+            <div className="space-y-2">
+              <button onClick={() => { if (overlayTarget === "banner") bannerInputRef.current?.click(); else avatarInputRef.current?.click(); }}
+                className="w-full flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
+                <ImageIcon size={18} className="text-gray-400" /> Select from Gallery
+              </button>
+              {overlayTarget === "banner" && (
+                <div>
+                  <div className="flex items-center gap-2 px-1 py-2"><Paintbrush size={14} className="text-gray-400" /><span className="text-xs font-medium text-gray-500">Select a gradient</span></div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {BANNER_COLORS.map((gradient, i) => (
+                      <button key={i} onClick={() => handleGradientBanner(gradient)} disabled={saving}
+                        className="h-12 rounded-lg border border-gray-200 overflow-hidden hover:ring-2 hover:ring-black hover:ring-offset-1 transition-all disabled:opacity-50"
+                        style={{ background: gradient }} />
+                    ))}
+                  </div>
+                </div>
+              )}
+              {((overlayTarget === "banner" && profile.banner_base64) || (overlayTarget === "avatar" && profile.avatar_base64)) && (
+                <button onClick={async () => { if (overlayTarget === "banner") await saveProfile({ banner_base64: null }); else await saveProfile({ avatar_base64: null }); setOverlayTarget(null); }}
+                  disabled={saving} className="w-full flex items-center gap-3 rounded-xl border border-red-200 px-4 py-3 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50">
+                  <X size={18} /> {overlayTarget === "banner" ? "Remove Banner" : "Remove Photo"}
+                </button>
+              )}
+            </div>
+            {saving && <div className="flex items-center justify-center gap-2 mt-4"><div className="h-4 w-4 border-2 border-black border-t-transparent rounded-full animate-spin" /><span className="text-xs text-gray-500">Saving...</span></div>}
+          </div>
+        </div>
+      )}
+
+      {/* Subject management modal */}
+      {showSubjectModal && profile && currentUser && (
+        <SubjectManageModal
+          profileUser={profile}
+          currentUser={currentUser}
+          userSubjects={userSubjects}
+          onClose={() => setShowSubjectModal(false)}
+          onChanged={setUserSubjects}
+        />
+      )}
+
+      <input ref={bannerInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImageUpload(f, "banner"); e.target.value = ""; }} />
+      <input ref={avatarInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImageUpload(f, "avatar"); e.target.value = ""; }} />
+    </main>
+  );
+}
