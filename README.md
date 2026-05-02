@@ -145,3 +145,10 @@ vercel --prod
 ```
 
 Set `BACKEND_URL` to the deployed backend URL in the Vercel project dashboard.
+
+---
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 (GPL-3.0).
+
