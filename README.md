@@ -1,8 +1,8 @@
 # KEC Archives — Frontend
 
-Next.js 15 frontend for [KEC Archives](https://kecarchives.vercel.app), the official academic platform for Krishna Engineering College, Bhilai.
+Next.js 15 frontend for [KEC Archives](https://www.kecarchives.com), the official academic platform for Krishna Engineering College, Bhilai.
 
-**Live:** https://kecarchives.vercel.app  
+**Live:** https://www.kecarchives.com  
 **Backend repo:** https://github.com/humairaambreen/kecarchives-api  
 **Built by:** Humaira Ambreen
 
