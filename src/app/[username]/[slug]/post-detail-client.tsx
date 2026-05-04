@@ -17,6 +17,23 @@ import { useAuth } from "@/lib/auth-context";
 /* ─────────────────────────────────────────────
    Helpers
 ───────────────────────────────────────────── */
+async function downloadFileWithName(url: string, filename: string) {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+  } catch {
+    window.open(url, "_blank");
+  }
+}
+
 function normalizeIso(iso: string) {
   return iso.endsWith("Z") || iso.includes("+") || iso.includes("-", 10) ? iso : iso + "Z";
 }
@@ -138,20 +155,19 @@ function Lightbox({ images, idx, onClose, onChange }: {
             </span>
           )}
           {/* ── Download button ── */}
-          <a
-            href={images[idx].file_url}
-            download={images[idx].file_name}
+          <button
+            onClick={() => downloadFileWithName(images[idx].file_url, images[idx].file_name)}
             title="Download image"
             style={{
               background: "none", border: "none", cursor: "pointer", padding: 4,
               color: "rgba(255,255,255,0.5)", display: "flex", alignItems: "center",
-              textDecoration: "none", transition: "color 0.15s",
+              transition: "color 0.15s",
             }}
             onMouseEnter={e => (e.currentTarget.style.color = "#fff")}
             onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,255,255,0.5)")}
           >
             <Download size={18} />
-          </a>
+          </button>
           {/* ── Close button ── */}
           <button
             onClick={onClose}
@@ -323,8 +339,8 @@ function MediaGallery({ media }: { media: PostMedia[] }) {
       ))}
 
       {docs.map((d) => (
-        <a key={d.id} href={d.file_url} target="_blank" rel="noopener noreferrer"
-          className="mt-3 flex items-center gap-3 rounded-2xl bg-neutral-50 border border-neutral-200 p-4 hover:bg-neutral-100 transition-colors group"
+        <button key={d.id} onClick={() => downloadFileWithName(d.file_url, d.file_name)}
+          className="mt-3 w-full flex items-center gap-3 rounded-2xl bg-neutral-50 border border-neutral-200 p-4 hover:bg-neutral-100 transition-colors group text-left"
         >
           <div className="h-9 w-9 rounded-xl bg-neutral-200 text-neutral-600 grid place-items-center shrink-0">
             <FileText size={16} />
@@ -334,7 +350,7 @@ function MediaGallery({ media }: { media: PostMedia[] }) {
             <p className="text-[11px] text-neutral-400 mt-0.5">{(d.file_size / 1024).toFixed(0)} KB</p>
           </div>
           <Download size={14} className="text-neutral-400 group-hover:text-neutral-700 transition-colors shrink-0" />
-        </a>
+        </button>
       ))}
 
       {lightboxIdx !== null && (
