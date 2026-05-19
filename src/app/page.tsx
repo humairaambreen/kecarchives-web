@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   description:
     "The official academic platform for Krishna Engineering College, Bhilai. Verified announcements, placement drives, batch-specific notices, and faculty messaging — all in one place.",
   keywords: ["KEC Archives", "Krishna Engineering College", "KEC Bhilai", "KEC student portal"],
-  authors: [{ name: "Humaira Ambreen", url: "https://humairaambreen.github.io" }],
+  authors: [{ name: "Humaira Ambreen", url: "https://humairaambreen.vercel.app" }],
   creator: "Humaira Ambreen",
   metadataBase: new URL("https://www.kecarchives.com"),
   alternates: { canonical: "/" },
@@ -761,7 +761,7 @@ export default function HomePage() {
             <p style={{ fontSize: ".7rem", color: "var(--fg-muted)" }}>© {new Date().getFullYear()} KEC Archives · Krishna Engineering College, Bhilai</p>
             <p style={{ fontSize: ".7rem", color: "var(--fg-muted)" }}>
               Designed &amp; developed by{" "}
-              <a href="https://humairaambreen.github.io" target="_blank" rel="noopener noreferrer" className="ft-author">Humaira Ambreen ↗</a>
+              <a href="https://humairaambreen.vercel.app" target="_blank" rel="noopener noreferrer" className="ft-author">Humaira Ambreen ↗</a>
             </p>
           </div>
         </div>
